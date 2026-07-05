@@ -46,6 +46,58 @@ impl Mode {
     }
 }
 
+impl Cpu {
+    /// Helper to get the current mode, panicking if the CPSR is in an illegal state.
+    fn get_mode(&self) -> Mode {
+        mode_from_bits(self.cpsr).expect("CPSR mode bits corrupted")
+    }
+
+    pub fn read_reg(&self, index: u32) -> u32 {
+        let idx = (index & 0xF) as usize;
+        let mode = self.get_mode();
+
+        if idx == 15 {
+            return self.r[15];
+        }
+
+        if (8..=12).contains(&idx) && mode == Mode::Fiq {
+            return self.r8_12_fiq[idx - 8];
+        }
+
+        if idx == 13 || idx == 14 {
+            if let Some(bank) = mode.bank_index() {
+                return if idx == 13 { self.r13_banked[bank] } else { self.r14_banked[bank] };
+            }
+        }
+
+        self.r[idx]
+    }
+
+    pub fn write_reg(&mut self, index: u32, value: u32) {
+        let idx = (index & 0xF) as usize;
+        let mode = self.get_mode();
+
+        if idx == 15 {
+            self.r[15] = value;
+            return;
+        }
+
+        if (8..=12).contains(&idx) && mode == Mode::Fiq {
+            self.r8_12_fiq[idx - 8] = value;
+            return;
+        }
+
+        if idx == 13 || idx == 14 {
+            if let Some(bank) = mode.bank_index() {
+                if idx == 13 { self.r13_banked[bank] = value; } else { self.r14_banked[bank] = value; }
+                return;
+            }
+        }
+
+        self.r[idx] = value;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +129,44 @@ mod tests {
         assert_eq!(Mode::System.bank_index(), None);
         assert_eq!(Mode::Fiq.bank_index(), Some(0));
         assert_eq!(Mode::Undefined.bank_index(), Some(4));
+    }
+
+    #[test]
+    fn test_register_access_scenarios() {
+        let mut cpu = Cpu {
+            r: [0; 16],
+            cpsr: Mode::User as u32,
+            r8_12_fiq: [0; 5],
+            r13_banked: [0; 5],
+            r14_banked: [0; 5],
+            spsr_banked: [0; 5],
+        };
+
+        // 1. Write to r0 in User mode (Unbanked)
+        cpu.write_reg(0, 0xABC);
+        assert_eq!(cpu.read_reg(0), 0xABC);
+
+        // 2. Write to r8 in User vs FIQ (Banked)
+        cpu.write_reg(8, 0x111);
+        cpu.cpsr = Mode::Fiq as u32;
+        assert_eq!(cpu.read_reg(8), 0, "FIQ r8 should be fresh");
+        cpu.write_reg(8, 0x222);
+        assert_eq!(cpu.read_reg(8), 0x222);
+        cpu.cpsr = Mode::User as u32;
+        assert_eq!(cpu.read_reg(8), 0x111);
+
+        // 3. Write r13 in SVC vs ABT (Banked)
+        cpu.cpsr = Mode::Supervisor as u32;
+        cpu.write_reg(13, 0x333);
+        cpu.cpsr = Mode::Abort as u32;
+        assert_eq!(cpu.read_reg(13), 0, "Abort r13 should be fresh");
+        cpu.write_reg(13, 0x444);
+        assert_eq!(cpu.read_reg(13), 0x444);
+
+        // 4. PC is never banked
+        cpu.cpsr = Mode::User as u32;
+        cpu.write_reg(15, 0x555);
+        cpu.cpsr = Mode::Fiq as u32;
+        assert_eq!(cpu.read_reg(15), 0x555, "PC should not be banked in FIQ");
     }
 }
