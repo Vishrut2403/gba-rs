@@ -24,6 +24,28 @@ pub fn mode_from_bits(bits: u32) -> Option<Mode> {
     }
 }
 
+pub struct Cpu {
+    pub r: [u32; 16],
+    pub cpsr: u32,
+    pub r8_12_fiq: [u32;5],
+    pub r13_banked: [u32; 5],
+    pub r14_banked: [u32; 5],
+    pub spsr_banked: [u32; 5],
+}
+
+impl Mode {
+    pub fn bank_index(self) -> Option<usize> {
+        match self {
+            Self::User | Self::System => None,
+            Self::Fiq => Some(0),
+            Self::Irq => Some(1),
+            Self::Supervisor => Some(2),
+            Self::Abort => Some(3),
+            Self::Undefined => Some(4),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,5 +69,13 @@ mod tests {
         // Test that upper bits are correctly ignored
         // 0xFF_FF_FF_12 should mask down to 0x12 (Irq)
         assert_eq!(mode_from_bits(0xFF_FF_FF_12), Some(Mode::Irq));
+    }
+
+    #[test]
+    fn test_bank_index() {
+        assert_eq!(Mode::User.bank_index(), None);
+        assert_eq!(Mode::System.bank_index(), None);
+        assert_eq!(Mode::Fiq.bank_index(), Some(0));
+        assert_eq!(Mode::Undefined.bank_index(), Some(4));
     }
 }
