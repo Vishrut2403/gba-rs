@@ -10,7 +10,6 @@ pub enum Mode {
 }
 
 pub fn mode_from_bits(bits: u32) -> Option<Mode> {
-    // We only care about the bottom 5 bits (M4-M0)
     match bits & 0x1F {
         0x10 => Some(Mode::User),
         0x11 => Some(Mode::Fiq),
@@ -19,18 +18,17 @@ pub fn mode_from_bits(bits: u32) -> Option<Mode> {
         0x17 => Some(Mode::Abort),
         0x1B => Some(Mode::Undefined),
         0x1F => Some(Mode::System),
-        // Writing any other value into mode bits is not allowed
-        _ => None, 
+        _ => None,
     }
 }
 
 pub struct Cpu {
-    pub r: [u32; 16],
-    pub cpsr: u32,
-    pub r8_12_fiq: [u32;5],
-    pub r13_banked: [u32; 5],
-    pub r14_banked: [u32; 5],
-    pub spsr_banked: [u32; 5],
+    r: [u32; 16],
+    cpsr: u32,
+    r8_12_fiq: [u32; 5],
+    r13_banked: [u32; 5],
+    r14_banked: [u32; 5],
+    spsr_banked: [u32; 5],
 }
 
 impl Mode {
@@ -47,7 +45,20 @@ impl Mode {
 }
 
 impl Cpu {
-    /// Helper to get the current mode, panicking if the CPSR is in an illegal state.
+    /// Initializes the CPU to the hardware reset state:
+    /// Supervisor mode, interrupts disabled, PC at 0.
+    pub fn new() -> Self {
+        Self {
+            r: [0; 16],
+            // Mode 0x13 (Supervisor) | I-bit (1<<7) | F-bit (1<<6)
+            cpsr: 0x13 | (1 << 7) | (1 << 6),
+            r8_12_fiq: [0; 5],
+            r13_banked: [0; 5],
+            r14_banked: [0; 5],
+            spsr_banked: [0; 5],
+        }
+    }
+
     fn get_mode(&self) -> Mode {
         mode_from_bits(self.cpsr).expect("CPSR mode bits corrupted")
     }
@@ -111,15 +122,12 @@ mod tests {
 
     #[test]
     fn test_mode_from_bits_invalid() {
-        // Test a bit pattern that shouldn't match any valid mode
         assert_eq!(mode_from_bits(0x00), None);
         assert_eq!(mode_from_bits(0x14), None); 
     }
 
     #[test]
     fn test_mode_from_bits_masking() {
-        // Test that upper bits are correctly ignored
-        // 0xFF_FF_FF_12 should mask down to 0x12 (Irq)
         assert_eq!(mode_from_bits(0xFF_FF_FF_12), Some(Mode::Irq));
     }
 
@@ -133,20 +141,15 @@ mod tests {
 
     #[test]
     fn test_register_access_scenarios() {
-        let mut cpu = Cpu {
-            r: [0; 16],
-            cpsr: Mode::User as u32,
-            r8_12_fiq: [0; 5],
-            r13_banked: [0; 5],
-            r14_banked: [0; 5],
-            spsr_banked: [0; 5],
-        };
+        let mut cpu = Cpu::new();
 
         // 1. Write to r0 in User mode (Unbanked)
+        cpu.cpsr = Mode::User as u32;
         cpu.write_reg(0, 0xABC);
         assert_eq!(cpu.read_reg(0), 0xABC);
 
         // 2. Write to r8 in User vs FIQ (Banked)
+        cpu.cpsr = Mode::User as u32;
         cpu.write_reg(8, 0x111);
         cpu.cpsr = Mode::Fiq as u32;
         assert_eq!(cpu.read_reg(8), 0, "FIQ r8 should be fresh");
