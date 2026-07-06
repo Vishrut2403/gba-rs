@@ -1,3 +1,5 @@
+use crate::bits;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
     User = 0x10,
@@ -107,6 +109,25 @@ impl Cpu {
 
         self.r[idx] = value;
     }
+
+    pub fn flag_n(&self) -> bool { bits::bit(self.cpsr, 31) }
+    pub fn flag_z(&self) -> bool { bits::bit(self.cpsr, 30) }
+    pub fn flag_c(&self) -> bool { bits::bit(self.cpsr, 29) }
+    pub fn flag_v(&self) -> bool { bits::bit(self.cpsr, 28) }
+
+    pub fn set_flag_n(&mut self, val: bool) { self.set_flag(31, val); }
+    pub fn set_flag_z(&mut self, val: bool) { self.set_flag(30, val); }
+    pub fn set_flag_c(&mut self, val: bool) { self.set_flag(29, val); }
+    pub fn set_flag_v(&mut self, val: bool) { self.set_flag(28, val); }
+
+    fn set_flag(&mut self, pos: u32, val: bool) {
+        if val {
+            self.cpsr |= 1 << pos;
+        }
+        else {
+            self.cpsr &= !(1 << pos);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -171,5 +192,50 @@ mod tests {
         cpu.write_reg(15, 0x555);
         cpu.cpsr = Mode::Fiq as u32;
         assert_eq!(cpu.read_reg(15), 0x555, "PC should not be banked in FIQ");
+    }
+
+    #[test]
+    fn test_flag_getters() {
+        let mut cpu = Cpu::new();
+        // manually poke cpsr to a known bit pattern, bypassing setters,
+        // so this test doesn't depend on set_flag being correct
+        cpu.cpsr = 0x8000_0000; // just N set
+        assert!(cpu.flag_n());
+        assert!(!cpu.flag_z());
+        assert!(!cpu.flag_c());
+        assert!(!cpu.flag_v());
+    }
+
+    #[test]
+    fn test_set_flag_sets_correct_bit() {
+        let mut cpu = Cpu::new();
+        cpu.cpsr = 0; // start from clean slate, ignore reset mode bits for this test
+        cpu.set_flag_n(true);
+        assert_eq!(cpu.cpsr, 0x8000_0000);
+    }
+
+    #[test]
+    fn test_set_flag_does_not_disturb_neighbors() {
+        let mut cpu = Cpu::new();
+        cpu.cpsr = 0;
+        cpu.set_flag_n(true);
+        cpu.set_flag_z(true);
+        assert!(cpu.flag_n());
+        assert!(cpu.flag_z());
+
+        cpu.set_flag_n(false);
+        assert!(!cpu.flag_n(), "N should be cleared");
+        assert!(cpu.flag_z(), "Z should survive N being cleared");
+    }
+
+    #[test]
+    fn test_set_flag_clear_does_not_disturb_others() {
+        let mut cpu = Cpu::new();
+        cpu.cpsr = 0xF000_0000; // all four flags set
+        cpu.set_flag_c(false);
+        assert!(cpu.flag_n());
+        assert!(cpu.flag_z());
+        assert!(!cpu.flag_c(), "C should be cleared");
+        assert!(cpu.flag_v());
     }
 }
