@@ -39,6 +39,15 @@ impl Bus {
         top == 0x0E || top == 0x0F
     }
 
+    fn get_vram_offset(addr: u32) -> usize {
+        let offset = (addr as usize) & 0x1FFFF;
+        if offset >= 0x18000 {
+            offset - 0x8000
+        } else {
+            offset
+        }
+    }
+
     pub fn read8(&self, addr: u32) -> u8 {
         match addr >> 24 {
             0x00 => self.bios[(addr as usize) & (BIOS_SIZE - 1)],
@@ -46,15 +55,7 @@ impl Bus {
             0x03 => self.iwram[(addr as usize) & (IWRAM_SIZE - 1)],
             0x04 => self.io[(addr as usize) & (IO_SIZE - 1)],
             0x05 => self.palette[(addr as usize) & (PALETTE_SIZE - 1)],
-            0x06 => {
-                let offset = (addr as usize) & 0x1FFFF; // 128KB mirror period
-                if offset >= 0x18000 {
-                    // Top 32KB mirrors the 0x10000 - 0x17FFF range
-                    self.vram[offset - 0x8000]
-                } else {
-                    self.vram[offset]
-                }
-            }
+            0x06 => self.vram[Self::get_vram_offset(addr)],
             0x07 => self.oam[(addr as usize) & (OAM_SIZE - 1)],
             0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D => {
                 if self.rom.is_empty() {
@@ -64,23 +65,19 @@ impl Bus {
                 if offset < self.rom.len() {
                     self.rom[offset]
                 } else {
-                    // Out of bounds for the loaded ROM
-                    0 
+                    0
                 }
             }
             0x0E | 0x0F => {
                 if self.sram.is_empty() {
                     return 0;
                 }
-                // SRAM mirrors across its loaded size (usually a power of 2, like 32K or 64K)
                 self.sram[(addr as usize) & (self.sram.len() - 1)]
             }
-            _ => 0, // TODO(open-bus): accurately model floating bus values
+            _ => 0,
         }
     }
 
-    // TODO: misaligned-address rotation is a CPU-side LDR/LDRH concern, 
-    // not handled here. The CPU will rotate these results if misaligned.
     pub fn read16(&self, addr: u32) -> u16 {
         if Self::is_sram(addr) {
             return (self.read8(addr) as u16) * 0x0101;
@@ -101,6 +98,80 @@ impl Bus {
         let b2 = self.read8(addr + 2);
         let b3 = self.read8(addr + 3);
         u32::from_le_bytes([b0, b1, b2, b3])
+    }
+
+    /// Internal helper: performs plain write to memory with no side effects.
+    fn raw_write8(&mut self, addr: u32, val: u8) {
+        match addr >> 24 {
+            0x00 => {} // BIOS is read-only
+            0x02 => self.ewram[(addr as usize) & (EWRAM_SIZE - 1)] = val,
+            0x03 => self.iwram[(addr as usize) & (IWRAM_SIZE - 1)] = val,
+            0x04 => self.io[(addr as usize) & (IO_SIZE - 1)] = val,
+            0x05 => self.palette[(addr as usize) & (PALETTE_SIZE - 1)] = val,
+            0x06 => self.vram[Self::get_vram_offset(addr)] = val,
+            0x07 => self.oam[(addr as usize) & (OAM_SIZE - 1)] = val,
+            0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D => {} // ROM is read-only
+            0x0E | 0x0F => {
+                if !self.sram.is_empty() {
+                    let mask = self.sram.len() - 1;
+                    self.sram[(addr as usize) & mask] = val;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn write8(&mut self, addr: u32, val: u8) {
+        match addr >> 24 {
+            0x05 => {
+                // Palette: 8-bit duplication
+                let aligned = addr & !1;
+                self.raw_write8(aligned, val);
+                self.raw_write8(aligned | 1, val);
+            }
+            0x06 => {
+                // VRAM: 8-bit BG/OBJ split
+                let offset = Self::get_vram_offset(addr);
+                if offset < 0x10000 {
+                    // Background
+                    let aligned = addr & !1;
+                    self.raw_write8(aligned, val);
+                    self.raw_write8(aligned | 1, val);
+                }
+            }
+            0x07 => {} // OAM: 8-bit write ignored
+            _ => self.raw_write8(addr, val),
+        }
+    }
+
+    pub fn write16(&mut self, addr: u32, val: u16) {
+        if Self::is_sram(addr) {
+            if !self.sram.is_empty() {
+                let mask = self.sram.len() - 1;
+                let byte_index = (addr & 1) as usize;
+                self.sram[(addr as usize) & mask] = val.to_le_bytes()[byte_index];
+            }
+            return;
+        }
+        let bytes = val.to_le_bytes();
+        self.raw_write8(addr, bytes[0]);
+        self.raw_write8(addr + 1, bytes[1]);
+    }
+
+    pub fn write32(&mut self, addr: u32, val: u32) {
+        if Self::is_sram(addr) {
+            if !self.sram.is_empty() {
+                let mask = self.sram.len() - 1;
+                let byte_index = (addr & 3) as usize;
+                self.sram[(addr as usize) & mask] = val.to_le_bytes()[byte_index];
+            }
+            return;
+        }
+        let bytes = val.to_le_bytes();
+        self.raw_write8(addr, bytes[0]);
+        self.raw_write8(addr + 1, bytes[1]);
+        self.raw_write8(addr + 2, bytes[2]);
+        self.raw_write8(addr + 3, bytes[3]);
     }
 }
 
@@ -124,22 +195,16 @@ mod tests {
     #[test]
     fn test_ewram_mirroring() {
         let mut bus = create_test_bus();
-        bus.ewram[0] = 0x42; // Real physical address
-        // 256KB = 0x40000. Accessing 0x02040000 should wrap perfectly to 0
+        bus.ewram[0] = 0x42;
         assert_eq!(bus.read8(0x0204_0000), 0x42);
     }
 
     #[test]
     fn test_vram_complex_mirroring() {
         let mut bus = create_test_bus();
-        // Set a byte at 0x10000 inside the physical VRAM (the start of the second 64KB block)
         bus.vram[0x10000] = 0x99;
-        
-        // Read from 0x06018000 (which is exactly at the 96KB mark). 
-        // This should mirror down to 0x10000.
         assert_eq!(bus.read8(0x0601_8000), 0x99);
 
-        // Read from 0x06020000 (128KB mark). Should mirror to 0.
         bus.vram[0] = 0x77;
         assert_eq!(bus.read8(0x0602_0000), 0x77);
     }
@@ -149,13 +214,46 @@ mod tests {
         let mut bus = create_test_bus();
         bus.sram[0] = 0xAA;
 
-        // 8-bit read
         assert_eq!(bus.read8(0x0E00_0000), 0xAA);
-        
-        // 16-bit read should replicate byte
         assert_eq!(bus.read16(0x0E00_0000), 0xAAAA);
-        
-        // 32-bit read should replicate byte
         assert_eq!(bus.read32(0x0E00_0000), 0xAAAAAAAA);
+    }
+
+    #[test]
+    fn test_write_read_symmetry() {
+        let mut bus = create_test_bus();
+        bus.write16(0x0200_0000, 0x1234);
+        assert_eq!(bus.read16(0x0200_0000), 0x1234);
+    }
+
+    #[test]
+    fn test_readonly_noops() {
+        let mut bus = create_test_bus();
+        bus.write8(0x0000_0000, 0xAA);
+        bus.write8(0x0800_0000, 0xBB);
+        assert_eq!(bus.read8(0x0000_0000), 0x00);
+        assert_eq!(bus.read8(0x0800_0000), 0x00);
+    }
+
+    #[test]
+    fn test_oam_vram_write_quirks() {
+        let mut bus = create_test_bus();
+        bus.write8(0x0700_0000, 0xAA);
+        assert_eq!(bus.read8(0x0700_0000), 0x00);
+        bus.write16(0x0700_0000, 0x1234);
+        assert_eq!(bus.read16(0x0700_0000), 0x1234);
+
+        bus.write8(0x0600_0000, 0xCC);
+        assert_eq!(bus.read16(0x0600_0000), 0xCCCC);
+    }
+
+    #[test]
+    fn test_sram_rotation() {
+        let mut bus = create_test_bus();
+        bus.write16(0x0E00_0001, 0x1234);
+        assert_eq!(bus.read8(0x0E00_0001), 0x12);
+
+        bus.write32(0x0E00_0002, 0x12345678);
+        assert_eq!(bus.read8(0x0E00_0002), 0x34);
     }
 }
