@@ -1,4 +1,5 @@
 use crate::bits;
+use crate::bus::Bus;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -128,6 +129,10 @@ impl Cpu {
             self.cpsr &= !(1 << pos);
         }
     }
+
+    pub fn fetch(&self, bus: &Bus) -> u32 {
+        bus.read32(self.r[15])
+    }
 }
 
 #[cfg(test)]
@@ -235,5 +240,17 @@ mod tests {
         assert!(cpu.flag_z());
         assert!(!cpu.flag_c(), "C should be cleared");
         assert!(cpu.flag_v());
+    }
+
+    #[test]
+    fn test_fetch_instruction() {
+        let rom = vec![0x00, 0x00, 0xA0, 0xE1];
+        let bus = Bus::new(rom, vec![]);
+        let mut cpu = Cpu::new();
+
+        cpu.r[15] = 0x0800_0000;
+        let instr = cpu.fetch(&bus);
+
+        assert_eq!(instr, 0xE1A00000);
     }
 }
