@@ -197,9 +197,7 @@ mod tests {
     #[test]
     fn test_flag_getters() {
         let mut cpu = Cpu::new();
-        // manually poke cpsr to a known bit pattern, bypassing setters,
-        // so this test doesn't depend on set_flag being correct
-        cpu.cpsr = 0x8000_0000; // just N set
+        cpu.cpsr = 0x8000_0000;
         assert!(cpu.flag_n());
         assert!(!cpu.flag_z());
         assert!(!cpu.flag_c());
@@ -209,7 +207,7 @@ mod tests {
     #[test]
     fn test_set_flag_sets_correct_bit() {
         let mut cpu = Cpu::new();
-        cpu.cpsr = 0; // start from clean slate, ignore reset mode bits for this test
+        cpu.cpsr = 0;
         cpu.set_flag_n(true);
         assert_eq!(cpu.cpsr, 0x8000_0000);
     }
@@ -231,7 +229,7 @@ mod tests {
     #[test]
     fn test_set_flag_clear_does_not_disturb_others() {
         let mut cpu = Cpu::new();
-        cpu.cpsr = 0xF000_0000; // all four flags set
+        cpu.cpsr = 0xF000_0000;
         cpu.set_flag_c(false);
         assert!(cpu.flag_n());
         assert!(cpu.flag_z());
