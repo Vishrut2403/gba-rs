@@ -1,5 +1,7 @@
+use std::convert::TryFrom;
 use crate::bits;
 use crate::bus::Bus;
+use crate::condition::{Condition, evaluate_cond};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -133,6 +135,24 @@ impl Cpu {
     pub fn fetch(&self, bus: &Bus) -> u32 {
         bus.read32(self.r[15])
     }
+
+    pub fn check_condition(&self, instr: u32) -> bool {
+        let cond_bits = bits::bits(instr, 28, 31);
+        match Condition::try_from(cond_bits as u8) {
+            Ok(cond) => {
+                evaluate_cond(
+                    cond,
+                    self.flag_n(),
+                    self.flag_z(),
+                    self.flag_c(),
+                    self.flag_v()
+                )
+            }
+            Err(_) => {
+                false
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -252,5 +272,37 @@ mod tests {
         let instr = cpu.fetch(&bus);
 
         assert_eq!(instr, 0xE1A00000);
+    }
+
+    #[test]
+    fn test_check_condition_pass_and_fail() {
+        let mut cpu = Cpu::new();
+        
+        // 0x0000_0000 has condition 0x0 (EQ) in bits 31-28
+        let instr_eq = 0x0000_0000;
+        
+        // Case 1: Condition passes (EQ requires Z flag set)
+        cpu.set_flag_z(true);
+        assert_eq!(cpu.check_condition(instr_eq), true);
+        
+        // Case 2: Condition fails (EQ requires Z flag set, currently clear)
+        cpu.set_flag_z(false);
+        assert_eq!(cpu.check_condition(instr_eq), false);
+    }
+
+    #[test]
+    fn test_check_condition_nv_always_fails() {
+        let mut cpu = Cpu::new();
+        
+        // 0xF000_0000 has condition 0xF (NV) in bits 31-28
+        let instr_nv = 0xF000_0000;
+        
+        // Even if we set every flag to true, NV (0xF) must return false
+        cpu.set_flag_n(true);
+        cpu.set_flag_z(true);
+        cpu.set_flag_c(true);
+        cpu.set_flag_v(true);
+        
+        assert_eq!(cpu.check_condition(instr_nv), false);
     }
 }
